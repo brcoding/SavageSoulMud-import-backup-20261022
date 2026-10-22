@@ -1,0 +1,146 @@
+//! The text catalog: every piece of author-facing text, addressed by a dotted
+//! **key** (`social.say.third_party`). One namespace.
+//!
+//! # Why this is not `rust-i18n`
+//!
+//! GRIM's colour markup uses `{` (`{R`, `{x`), which collides head-on with the
+//! `{var}` interpolation `rust-i18n`'s `t!` expects — a coloured string makes it
+//! choke or silently mangle. So strings are addressed here with `%{var}`
+//! placeholders, colour is converted separately by `grim-color`, and there is no
+//! i18n runtime at all. This crate replaced two parallel systems (`rust-i18n` for
+//! plain keys, a hand-rolled `tr` for coloured ones) that both read the same file.
+//!
+//! # Defaults, for now
+//!
+//! Defaults are inlined in [`default_string`] rather than loaded from disk. The
+//! target design layers author overrides on top and merges `strings/<locale>/*.json`
+//! with `templates/<locale>/<key>`; that arrives with the plugin-composition work
+//! (a `Catalog` resource). Until then the lookup is a static function, which keeps
+//! this crate Bevy-free and preserves current behaviour exactly. The `include_str!`
+//! that used to reach out of the crate into the workspace-root `locales/` is gone.
+
+#[macro_use]
+mod macros;
+mod catalog;
+mod grid;
+mod table;
+
+pub use catalog::{render, tr};
+pub use grid::column_grid;
+pub use table::{table, Align};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use grim_color::{ansi, convert_16color};
+
+    #[test]
+    fn unknown_key_returns_key() {
+        assert_eq!(tr("no.such.key", &[]), "no.such.key");
+    }
+
+    #[test]
+    fn login_prompt_names_both_identifier_kinds() {
+        assert_eq!(
+            tr("login.prompt", &[]),
+            "Character name or account email address (\"help\" for more info): "
+        );
+    }
+
+    #[test]
+    fn login_confirm_create_names_the_address() {
+        let out = tr("login.confirm_create", &[("addr", "new@example.com")]);
+        assert_eq!(
+            out,
+            "Do you want to create an account using new@@example.com? [Y/n] "
+        );
+    }
+
+    #[test]
+    fn script_failure_names_mob_and_moment() {
+        let out = tr(
+            "script.trigger.failed",
+            &[("name", "Grimmok"), ("trigger", "enter"), ("error", "boom")],
+        );
+        assert_eq!(out, "Script error in Grimmok (enter): boom\n");
+    }
+
+    #[test]
+    fn say_first_party_interpolates() {
+        let out = tr("social.say.first_party", &[("text", "hello")]);
+        assert_eq!(out, "@xf0fYou say @r'@x909hello@r'\n");
+    }
+
+    #[test]
+    fn say_third_party_interpolates() {
+        let out = tr(
+            "social.say.third_party",
+            &[("speaker", "Alice"), ("text", "hi")],
+        );
+        assert_eq!(out, "@xf0fAlice says @r'@x909hi@r'\n");
+    }
+
+    #[test]
+    fn interpolated_value_cannot_inject_colour() {
+        let out = tr(
+            "social.say.third_party",
+            &[("speaker", "Alice"), ("text", "{RHELLO")],
+        );
+        let rendered = ansi(&convert_16color(&out));
+        assert!(
+            rendered.contains("{RHELLO"),
+            "spoken markup must render literally: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn macro_matches_function() {
+        let text = "hi";
+        assert_eq!(
+            tr!("social.say.first_party", text = text),
+            tr("social.say.first_party", &[("text", "hi")])
+        );
+    }
+
+    #[test]
+    fn macro_with_no_args() {
+        assert_eq!(tr!("login.prompt"), tr("login.prompt", &[]));
+    }
+
+    #[test]
+    fn render_substitutes_file_style_template() {
+        let out = render(
+            "%{actor} grins at %{target}.\n",
+            &[("actor", "Alice"), ("target", "Bob")],
+        );
+        assert_eq!(out, "Alice grins at Bob.\n");
+    }
+
+    #[test]
+    fn render_escapes_values_like_tr() {
+        let out = render("%{actor} grins.\n", &[("actor", "{RMal")]);
+        let rendered = ansi(&convert_16color(&out));
+        assert!(
+            rendered.contains("{RMal"),
+            "override names must render literally: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn render_converts_colour_before_substitution() {
+        let out = render("{M%{actor} grins.\n", &[("actor", "Alice")]);
+        assert_eq!(out, "@xf0fAlice grins.\n");
+    }
+
+    #[test]
+    fn social_grin_defaults_resolve() {
+        assert_eq!(tr("social.grin.solo.actor", &[]), "You grin.\n");
+        assert_eq!(
+            tr(
+                "social.grin.other.room",
+                &[("actor", "Al"), ("target", "Bo")]
+            ),
+            "Al grins at Bo.\n"
+        );
+    }
+}

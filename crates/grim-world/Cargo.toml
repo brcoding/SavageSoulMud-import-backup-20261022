@@ -1,0 +1,13 @@
+[package]
+name = "grim-world"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+grim-core = { path = "../grim-core" }
+bevy = { workspace = true, default-features = false }
+signal-hook = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+chrono = { workspace = true }
