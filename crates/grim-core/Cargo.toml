@@ -1,0 +1,14 @@
+[package]
+name = "grim-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+grim-color = { path = "../grim-color" }
+bevy = { workspace = true, default-features = false }
+serde = { workspace = true }
+nanoid = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

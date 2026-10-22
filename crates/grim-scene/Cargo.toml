@@ -1,0 +1,30 @@
+[package]
+name = "grim-scene"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.10"
+grim-core = { path = "../grim-core" }
+grim-networking = { path = "../grim-networking" }
+grim-command = { path = "../grim-command" }
+grim-text = { path = "../grim-text" }
+grim-color = { path = "../grim-color" }
+# Copyover resume loads characters from disk; `quit` saves them. Needs the config.
+grim-persistence = { path = "../grim-persistence" }
+# Room/area topology the resume placement resolves + the race/class registries
+# the WHO list reads for column abbreviations.
+grim-world = { path = "../grim-world" }
+# Beings (Character/Player/InRoom/Linkdead/OutputHistory) the session reads.
+grim-actor = { path = "../grim-actor" }
+grim-channel = { path = "../grim-channel" }
+grim-object = { path = "../grim-object" }
+# Player settings the look minimap resolves (`minimap` on/off).
+grim-config = { path = "../grim-config" }
+bevy = { workspace = true, default-features = false }
+chrono = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# Test harness composes the channel plugin to exercise the full loop.
+grim-channel = { path = "../grim-channel" }

@@ -1,0 +1,23 @@
+name: Build and focused checks
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check workspace
+        run: cargo check --locked --workspace
+      - name: Character rules and structured sign-in
+        run: |
+          cargo test --locked -p example-mud --lib savage_rules
+          cargo test --locked -p grim-auth --lib structured_login
+      - name: Check website sources
+        run: python3 website/build.py

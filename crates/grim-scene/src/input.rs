@@ -1,0 +1,139 @@
+//! In-game input routing: the per-connection dispatcher that parses each line
+//! for a session in [`ClientState::InGame`] into an in-game command.
+//!
+//! This is one half of the routing split — the pre-game half (login / creation
+//! / character-select / MOTD) lives in the auth crate. This system handles ONLY
+//! `InGame` clients; every pre-game state is skipped here.
+//!
+//! ## Intra-tick transition guard
+//! A single pre-game line can advance a client to `InGame` in the same tick
+//! (the MOTD ENTER, or a login-by-name reconnect). The pre-game (auth) system
+//! runs first, consumes that line, and records the connection in
+//! [`JustEnteredWorld`]. This system skips any connection in that set so the
+//! triggering line is not re-dispatched as an in-game command. Ordering is
+//! enforced by [`crate::SceneSystems::InGameInput`] (auth runs `.before` it).
+
+use bevy::prelude::*;
+use grim_actor::{Actor, Character, Linkdead};
+use grim_core::components::{Account, Client, Description, Name as GrimName};
+use grim_core::events::EditorDone;
+use grim_networking::{Connection, ConnectionInput, ConnectionOutput};
+use grim_persistence::PersistenceConfig;
+
+use crate::command;
+use crate::editor;
+use crate::params::{PlayerChars, RoomResolver, SessionRes};
+use crate::scene_stack::{top_is_ingame, InGameScene, SceneStack};
+use crate::session::JustEnteredWorld;
+use crate::sockets::ClientSnapshot;
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn handle_ingame_input(
+    mut inputs: MessageReader<ConnectionInput>,
+    mut clients: Query<(Entity, &mut Client)>,
+    stacks: Query<&SceneStack>,
+    ingame: Query<&InGameScene>,
+    characters: Query<(Entity, &Character, &Actor, &GrimName)>,
+    player_chars: PlayerChars,
+    descriptions: Query<&Description>,
+    persistence: Res<PersistenceConfig>,
+    linkdead: Query<&Linkdead>,
+    rooms: RoomResolver,
+    res: SessionRes,
+    connections: Query<&Connection>,
+    accounts: Query<&Account>,
+    mut just_entered: ResMut<JustEnteredWorld>,
+    mut done: MessageWriter<EditorDone>,
+    mut outputs: MessageWriter<ConnectionOutput>,
+) {
+    // Snapshot every session once per tick for the `sockets` list. A second
+    // `Client` query inside `handle_ingame` would conflict with the `&mut`
+    // borrow below, so the data crosses as plain values.
+    let now = res.time.elapsed();
+    // Re-synced below as lines dispatch (the `afk` verb flips `Client.afk`
+    // mid-batch), so later lines in the same tick read current flags.
+    let mut snapshot: Vec<ClientSnapshot> = clients
+        .iter()
+        .map(|(entity, c)| ClientSnapshot {
+            client: entity,
+            connection: c.connection,
+            state: c.state.clone(),
+            account: c.account,
+            character: c.character,
+            afk: c.afk,
+            idle_secs: c.last_active.map(|last| now.saturating_sub(last).as_secs()),
+        })
+        .collect();
+    for ev in inputs.read() {
+        let Some(snap) = snapshot.iter().find(|s| s.connection == ev.connection) else {
+            continue;
+        };
+        let Ok((_, mut client)) = clients.get_mut(snap.client) else {
+            continue;
+        };
+        // Only the topmost scene interprets the line. Sessions without an
+        // in-game scene on top (pre-game, or mid-transition) are the auth
+        // system's job — a missing stack reads as not-in-game, fail closed.
+        let in_world = stacks
+            .get(snap.client)
+            .is_ok_and(|stack| top_is_ingame(stack, |top| ingame.get(top).is_ok()));
+        if !in_world {
+            continue;
+        }
+        // Consume-once: this connection was advanced into the world THIS tick by
+        // the pre-game system, which already handled the transition line. Swallow
+        // exactly that one line — `remove` returns true only for the first input
+        // per connection this tick, so a command that arrived in the SAME update
+        // after the transition (e.g. ENTER then `look`) still dispatches in order.
+        if just_entered.0.remove(&ev.connection) {
+            continue;
+        }
+        let conn = client.connection;
+        // Editor modal first: a session inside the editor never reaches the
+        // command parser — lines append, `@` lines control, close emits done.
+        // The state is a `Client` field (not a component), so opening and
+        // closing here are visible to later lines in the same tick.
+        if client.editor.is_some() {
+            let Some(editor) = client.editor.as_mut() else {
+                continue;
+            };
+            match editor::handle_editor_line(editor, ev.text.as_str()) {
+                editor::EditorAction::Stay { reply } => {
+                    if let Some(text) = reply {
+                        outputs.write(ConnectionOutput {
+                            echo: None,
+                            ..ConnectionOutput::new(conn, text)
+                        });
+                    }
+                }
+                editor::EditorAction::Closed { done: finished } => {
+                    client.editor = None;
+                    done.write(finished);
+                }
+            }
+            continue;
+        }
+        command::handle_ingame(
+            &mut client,
+            conn,
+            ev.text.as_str(),
+            &characters,
+            &player_chars,
+            &descriptions,
+            &persistence,
+            &linkdead,
+            &rooms,
+            &res,
+            &snapshot,
+            &connections,
+            &accounts,
+            &mut outputs,
+        );
+        // The `afk` verb flips `Client.afk` mid-batch: re-sync this session's
+        // snapshot row so a later line in the same tick (another session's
+        // `who`) reads it instead of waiting a tick.
+        if let Some(s) = snapshot.iter_mut().find(|s| s.connection == ev.connection) {
+            s.afk = client.afk;
+        }
+    }
+}
